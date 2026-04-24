@@ -3,9 +3,10 @@ import asyncio
 import sqlite3
 import threading
 import time
+import random
+import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from kafka import KafkaConsumer
 from risk_engine import RiskEngine
 
 # --- Portfolio config ---
@@ -17,11 +18,20 @@ PORTFOLIO = {
     "BLK":   {"shares": 10,  "purchase_price": 790.00},
 }
 
+# Base prices the simulator moves around
+BASE_PRICES = {
+    "AAPL":  189.50,
+    "MSFT":  415.20,
+    "GOOGL": 175.80,
+    "JPM":   198.30,
+    "BLK":   820.00,
+}
+
 BENCHMARK_VALUE = sum(
     v["shares"] * v["purchase_price"] for v in PORTFOLIO.values()
 )
 
-latest_prices = {ticker: 0.0 for ticker in PORTFOLIO}
+latest_prices = {ticker: base for ticker, base in BASE_PRICES.items()}
 risk_engine   = RiskEngine(window=100)
 
 # --- Database setup ---
@@ -123,9 +133,10 @@ def calculate_valuation():
 
 # --- FastAPI ---
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://portfolio-monitor-alpha.vercel.app/"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -172,42 +183,32 @@ def get_history(limit: int = 50):
         for r in reversed(rows)
     ]
 
-# --- Kafka listener ---
-def kafka_listener(loop):
-    consumer = KafkaConsumer(
-        "price-updates",
-        bootstrap_servers="localhost:9092",
-        value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-        auto_offset_reset="latest",
-        group_id="websocket-server-v2"
-    )
+@app.get("/")
+def root():
+    return {"status": "Portfolio Monitor running"}
 
-    print("✅ Kafka listener running...")
+# --- Internal price simulator (replaces Kafka producer) ---
+async def price_simulator():
+    """Simulates a market data feed internally — same logic as producer.py"""
+    print("🚀 Internal price simulator started...")
+    while True:
+        for ticker in BASE_PRICES:
+            change_pct            = random.uniform(-0.005, 0.005)
+            latest_prices[ticker] = round(BASE_PRICES[ticker] * (1 + change_pct), 2)
 
-    for message in consumer:
-        event  = message.value
-        ticker = event["ticker"]
-        latest_prices[ticker] = event["price"]
+        valuation         = calculate_valuation()
+        risk              = risk_engine.full_report(valuation["total"], valuation["positions"])
+        valuation["risk"] = risk
 
-        if all(p > 0 for p in latest_prices.values()):
-            valuation = calculate_valuation()
+        save_to_db(valuation)
 
-            # Run risk calculations
-            risk              = risk_engine.full_report(valuation["total"], valuation["positions"])
-            valuation["risk"] = risk
+        await broadcast(json.dumps(valuation))
 
-            # Persist to SQLite
-            save_to_db(valuation)
+        await asyncio.sleep(2)
 
-            # Broadcast to React
-            asyncio.run_coroutine_threadsafe(
-                broadcast(json.dumps(valuation)), loop
-            )
-
+# --- Startup ---
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    loop   = asyncio.get_event_loop()
-    thread = threading.Thread(target=kafka_listener, args=(loop,), daemon=True)
-    thread.start()
-    print("🚀 Server started at http://localhost:8000")
+    asyncio.create_task(price_simulator())
+    print("🚀 Server started")

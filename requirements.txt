@@ -1,4 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 kafka-python
 numpy
+websockets
