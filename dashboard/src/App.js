@@ -32,7 +32,7 @@ export default function App() {
   const wsRef = useRef(null);
 
   useEffect(() => {
-    fetch("http://localhost:8000/history?limit=50")
+    fetch("https://portfolio-monitor-production-dc98.up.railway.app/history?limit=50")
       .then(r => r.json())
       .then(data => setHistory(data.map(d => ({
         time:  new Date(d.timestamp * 1000).toLocaleTimeString(),
@@ -44,7 +44,7 @@ export default function App() {
 
   useEffect(() => {
     const connect = () => {
-      const ws = new WebSocket("ws://localhost:8000/ws");
+      const ws = new WebSocket("wss://portfolio-monitor-production-dc98.up.railway.app/ws");
       wsRef.current = ws;
       ws.onopen  = () => setConnected(true);
       ws.onclose = () => { setConnected(false); setTimeout(connect, 2000); };
